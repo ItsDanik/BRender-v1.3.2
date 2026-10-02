@@ -163,13 +163,27 @@ char * BR_RESIDENT_ENTRY BrTokenIdentifier(br_token t)
 /*
  * Returns a token representing the type associated with the token
  */
+/*
+ * dethrace: the renderer asks for token types on every state change and the
+ * registry is a linked list of several hundred entries. A token's type never
+ * changes once registered, so remember the ones found.
+ */
+#define TOKEN_TYPE_CACHE_SIZE 4096
+static br_token token_type_cache[TOKEN_TYPE_CACHE_SIZE];
+
 br_token BR_RESIDENT_ENTRY BrTokenType(br_token t)
 {
 	br_token_entry *te;
 
+	if(t < TOKEN_TYPE_CACHE_SIZE && token_type_cache[t] != BR_NULL_TOKEN)
+		return token_type_cache[t];
+
 	BR_FOR_LIST(&fw.tokens, te)
-		if(t == te->token)
+		if(t == te->token) {
+			if(t < TOKEN_TYPE_CACHE_SIZE)
+				token_type_cache[t] = te->type;
 			return te->type;
+		}
 
 	return BR_NULL_TOKEN;
 }
