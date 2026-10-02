@@ -6,6 +6,8 @@
 #include "stdio.h"
 #include "common.h"
 #include "fpwork.h"
+#include "fastprim.h"
+#include "verify.h"
 
 // TriangleRender_ZT_I8_D16_POW2 3,_8
 // TriangleRender_ZT_I8_D16_POW2 4,_16
@@ -258,7 +260,8 @@ lineDrawn:
 	}
 }
 
-void BR_ASM_CALL TriangleRender_ZT_I8_D16_POW2(brp_block *block, int pow2, int skip_setup, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2) {
+// Setup and span start addresses, shared by the original and the rewritten span loops
+static void TriangleRender_ZT_I8_D16_POW2_Prepare(int skip_setup, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2) {
     /*
 	brp_vertex *v0; // [esp+18h] [ebp+Ch]
     brp_vertex *v1; // [esp+1Ch] [ebp+10h]
@@ -361,6 +364,11 @@ void BR_ASM_CALL TriangleRender_ZT_I8_D16_POW2(brp_block *block, int pow2, int s
 
 // 	mov workspace.d_z_x,edx
 	workspace.d_z_x = edx.v;
+}
+
+static void TriangleRender_ZT_I8_D16_POW2_Ref(int pow2, int skip_setup, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2) {
+	TriangleRender_ZT_I8_D16_POW2_Prepare(skip_setup, v0, v1, v2);
+	eax.v = workspace.flip;
 // 	jnz	drawRL
 
 // 	DRAW_ZT_I8_D16_POW2 x1,DRAW_LR,top,pow2
@@ -379,6 +387,17 @@ void BR_ASM_CALL TriangleRender_ZT_I8_D16_POW2(brp_block *block, int pow2, int s
 		DRAW_ZT_I8_D16_POW2 (&workspace.x1, &workspace.d_x1, DRAW_RL,&workspace.topCount,pow2);
 		DRAW_ZT_I8_D16_POW2 (&workspace.x2, &workspace.d_x2, DRAW_RL,&workspace.bottomCount,pow2);
 	}
+}
+
+static void TriangleRender_ZT_I8_D16_POW2_Fast(int pow2, int skip_setup, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2) {
+	TriangleRender_ZT_I8_D16_POW2_Prepare(skip_setup, v0, v1, v2);
+	FastDraw_ZT_I8_D16_POW2(workspace.flip != 0, pow2);
+}
+
+void BR_ASM_CALL TriangleRender_ZT_I8_D16_POW2(brp_block *block, int pow2, int skip_setup, brp_vertex* v0, brp_vertex* v1, brp_vertex* v2) {
+	PENTPRIM_DISPATCH("TriangleRender_ZT_I8_D16_POW2",
+		TriangleRender_ZT_I8_D16_POW2_Ref(pow2, skip_setup, v0, v1, v2),
+		TriangleRender_ZT_I8_D16_POW2_Fast(pow2, skip_setup, v0, v1, v2));
 }
 
 void BR_ASM_CALL TriangleRender_ZT_I8_D16_8(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {

@@ -141,6 +141,10 @@ add_library(pentprim
 	fti8pizp.c
 	zb8awtm.c
 	zb8p2unl.c
+	fastprim.c
+	fastprim.h
+	verify.c
+	verify.h
 	zb8p2lit.c
 	fti8_piz.c
 	zb8.c

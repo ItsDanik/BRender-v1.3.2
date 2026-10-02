@@ -4,6 +4,8 @@
 #include "work.h"
 #include "x86emu.h"
 #include "common.h"
+#include "fastprim.h"
+#include "verify.h"
 #include "fpwork.h"
 #include <stdio.h>
 
@@ -80,7 +82,20 @@ tSize_specific_params size_specific_params[] = {
     { .pre = 0, .incu = 1, .decu = 1, .incv = 1, .decv = 1, .post1 = 0, .post2 = 0xffffffff },
 };
 
-static inline void ScanlineRender_ZPT_I8_D16(int dirn, tSize_specific_params *sized_params, int udirn, int vdirn, tFog_enabled fogging, tBlend_enabled blend) {
+static inline __attribute__((always_inline)) void ScanlineRender_ZPT_I8_D16(int dirn, tSize_specific_params *sized_params, int udirn, int vdirn, tFog_enabled fogging, tBlend_enabled blend) {
+    // Performance: shadow the global emulated registers, flags and scan state with
+    // locals. The per-pixel byte stores through edi otherwise alias every global
+    // (char aliasing) and force reloads of all of them on each pixel.
+    x86_reg* const g_eax = &eax; x86_reg* const g_ebx = &ebx; x86_reg* const g_ecx = &ecx;
+    x86_reg* const g_edx = &edx; x86_reg* const g_esi = &esi; x86_reg* const g_edi = &edi;
+    x86_reg* const g_ebp = &ebp;
+    x86emu_state_t* const g_state = &x86_state;
+    x86_reg eax = *g_eax, ebx = *g_ebx, ecx = *g_ecx, edx = *g_edx, esi = *g_esi, edi = *g_edi, ebp = *g_ebp;
+    struct { int cf; uint32_t x86_swap; } x86_state = { g_state->cf, g_state->x86_swap };
+    struct perspective_scan tsl = work.tsl;
+    const tSize_specific_params sp = *sized_params;
+    uint8_t* const blend_table = work.blend_table;
+
     // ; Make temporary copies of parameters that change
 	// ;
 
@@ -122,34 +137,34 @@ static inline void ScanlineRender_ZPT_I8_D16(int dirn, tSize_specific_params *si
 
     }
 
-    // mov		work.tsl.u_numerator, edx
-    work.tsl.u_numerator = edx.v;
-    // mov		work.tsl.du_numerator, esi
-    work.tsl.du_numerator = esi.v;
-    // mov		work.tsl.v_numerator, ebp
-    work.tsl.v_numerator = ebp.v;
-    // mov		work.tsl.dv_numerator, edi
-    work.tsl.dv_numerator = edi.v;
+    // mov		tsl.u_numerator, edx
+    tsl.u_numerator = edx.v;
+    // mov		tsl.du_numerator, esi
+    tsl.du_numerator = esi.v;
+    // mov		tsl.v_numerator, ebp
+    tsl.v_numerator = ebp.v;
+    // mov		tsl.dv_numerator, edi
+    tsl.dv_numerator = edi.v;
     // mov		esi,work.texture.base
     esi.ptr_v = work.texture.base;
-    // mov		eax,work.tsl.source
-    eax.v = work.tsl.source;
-    // mov		edi,work.tsl.start
-    edi.ptr_v = work.tsl.start;
-    // mov		ebp,work.tsl.zstart
-    ebp.ptr_v = work.tsl.zstart;
+    // mov		eax,tsl.source
+    eax.v = tsl.source;
+    // mov		edi,tsl.start
+    edi.ptr_v = tsl.start;
+    // mov		ebp,tsl.zstart
+    ebp.ptr_v = tsl.zstart;
     // mov		ebx,work_pz_current
     ebx.v = work_pz_current;
     // mov		edx,work.pq.current
     edx.v = work.pq.current;
     // ror		ebx,16					; Swap z words
     ROR16(ebx);
-    // mov		work.tsl.denominator,edx
-    work.tsl.denominator = edx.v;
-    // mov		work.tsl.z,ebx
-    work.tsl.z = ebx.v;
-    // mov		work.tsl.dest,edi
-    work.tsl.dest = edi.ptr_v;
+    // mov		tsl.denominator,edx
+    tsl.denominator = edx.v;
+    // mov		tsl.z,ebx
+    tsl.z = ebx.v;
+    // mov		tsl.dest,edi
+    tsl.dest = edi.ptr_v;
 
 next_pixel:
 	// ; Texel fetch and store section
@@ -172,8 +187,8 @@ next_pixel:
 
     // mov		dh,[ebp+1]
     // no-op - already read both depth bytes
-    // mov		edi,work.tsl.dest
-    edi.ptr_8 = (uint8_t*)work.tsl.dest;
+    // mov		edi,tsl.dest
+    edi.ptr_8 = (uint8_t*)tsl.dest;
 
     // cmp		bx,dx
     // ja		nodraw
@@ -206,8 +221,8 @@ next_pixel:
         // ;
         // and     ecx,0ffh
         ecx.v &= 0xff;
-        // mov     edx,work.blend_table
-        edx.ptr_8 = work.blend_table;
+        // mov     edx,blend_table
+        edx.ptr_8 = blend_table;
         // mov     ch,[edi]
         ecx.h = *edi.ptr_8;
         // ;AGI stall
@@ -241,9 +256,9 @@ nodraw:
 	// ;
 
     // pre
-    eax.v <<= sized_params->pre;
-    // mov		ecx,work.tsl._end
-    ecx.ptr_v = work.tsl.end;
+    eax.v <<= sp.pre;
+    // mov		ecx,tsl._end
+    ecx.ptr_v = tsl.end;
     // ; Update destinations and check for end of scan
     // ;
     // inc_&dirn	edi
@@ -254,19 +269,19 @@ nodraw:
     // cmp		edi,ecx
     // jg_&dirn    ScanlineRender_ZPT&fogging&&blend&_I8_D16_&size&_&dirn&_done
     if (dirn == DIR_F && edi.v > ecx.v || dirn == DIR_B && edi.v < ecx.v) {
-        return;
+        goto done;
     }
 
     // ; Interpolate z
     // ;
-    // mov		ecx,work.tsl.dz
-    ecx.v = work.tsl.dz;
-    // mov		work.tsl.dest,edi
-    work.tsl.dest = edi.ptr_v;
+    // mov		ecx,tsl.dz
+    ecx.v = tsl.dz;
+    // mov		tsl.dest,edi
+    tsl.dest = edi.ptr_v;
     // add_&dirn	ebx,ecx
     ADD_SET_CF_D(ebx.v, ecx.v, dirn);
-    // mov		work.tsl.zdest,ebp
-    work.tsl.zdest = ebp.ptr_v;
+    // mov		tsl.zdest,ebp
+    tsl.zdest = ebp.ptr_v;
     // adc_&dirn	ebx,0		; carry into integer part of z
     ADC_D(ebx.v, 0, dirn);
 
@@ -281,24 +296,24 @@ nodraw:
 	// ; ebp = dq
 	// ;
 
-    // mov		edx,work.tsl.denominator
-    edx.v = work.tsl.denominator;
-    // mov		work.tsl.z,ebx
-    work.tsl.z = ebx.v;
-    // mov		ebp,work.tsl.ddenominator
-    ebp.v = work.tsl.ddenominator;
-    // mov		ebx,work.tsl.u_numerator
-    ebx.v = work.tsl.u_numerator;
-    // mov		edi,work.tsl.du_numerator
-    edi.v = work.tsl.du_numerator;
+    // mov		edx,tsl.denominator
+    edx.v = tsl.denominator;
+    // mov		tsl.z,ebx
+    tsl.z = ebx.v;
+    // mov		ebp,tsl.ddenominator
+    ebp.v = tsl.ddenominator;
+    // mov		ebx,tsl.u_numerator
+    ebx.v = tsl.u_numerator;
+    // mov		edi,tsl.du_numerator
+    edi.v = tsl.du_numerator;
     // ; Interpolate u numerator and denominator
     // ;
     // add_&dirn	edx,ebp
     ADD_D(edx.v, ebp.v, dirn);
     // add_&dirn	ebx,edi
     ADD_D(ebx.v, edi.v, dirn);
-    // mov		ecx,work.tsl.v_numerator
-    ecx.v = work.tsl.v_numerator;
+    // mov		ecx,tsl.v_numerator
+    ecx.v = tsl.v_numerator;
 
     // ifidni <udirn>,<b>
     if (udirn == eScan_direction_b) {
@@ -313,7 +328,7 @@ nodraw:
         // ;
 deculoop:
         // decu
-        eax.l -= sized_params->decu;
+        eax.l -= sp.decu;
         // add		edi,ebp
         edi.v += ebp.v;
         // add		ebx,edx
@@ -322,8 +337,8 @@ deculoop:
         if (ebx.int_val < 0) {
             goto deculoop;
         }
-        // mov		work.tsl.du_numerator,edi
-        work.tsl.du_numerator = edi.v;
+        // mov		tsl.du_numerator,edi
+        tsl.du_numerator = edi.v;
         // jmp		doneu
         goto doneu;
 nodecu:
@@ -336,7 +351,7 @@ nodecu:
         // ;
 inculoop:
         // incu
-        eax.l += sized_params->incu;
+        eax.l += sp.incu;
         // sub		edi,ebp
         edi.v -= ebp.v;
         // sub		ebx,edx
@@ -346,8 +361,8 @@ inculoop:
         if (ebx.int_val >= edx.int_val) {
             goto inculoop;
         }
-        // mov		work.tsl.du_numerator,edi
-        work.tsl.du_numerator = edi.v;
+        // mov		tsl.du_numerator,edi
+        tsl.du_numerator = edi.v;
         // vslot
         // no op
 
@@ -370,12 +385,12 @@ stepuloop:
         // ifidni <udirn>,<i>
         // incu
         if (udirn == eScan_direction_i) {
-            eax.l += sized_params->incu;
+            eax.l += sp.incu;
         }
         // else
 		// decu
         else {
-            eax.l -= sized_params->decu;
+            eax.l -= sp.decu;
         }
         // endif
 
@@ -401,24 +416,24 @@ stepuloop:
             goto stepuloop;
         }
 
-		// mov		work.tsl.du_numerator,edi
-        work.tsl.du_numerator = edi.v;
+		// mov		tsl.du_numerator,edi
+        tsl.du_numerator = edi.v;
 		// vslot
 
     }
 
 
 doneu:
-    // mov		edi,work.tsl.dv_numerator
-    edi.v = work.tsl.dv_numerator;
-    // mov		work.tsl.u_numerator,ebx
-    work.tsl.u_numerator = ebx.v;
+    // mov		edi,tsl.dv_numerator
+    edi.v = tsl.dv_numerator;
+    // mov		tsl.u_numerator,ebx
+    tsl.u_numerator = ebx.v;
     // ; Interpolate v numerator
     // ;
     // add_&dirn	ecx,edi
     ADD_D(ecx.v, edi.v, dirn);
-    // mov		work.tsl.denominator,edx
-    work.tsl.denominator = edx.v;
+    // mov		tsl.denominator,edx
+    tsl.denominator = edx.v;
 
 
     // ifidni <vdirn>,<b>
@@ -435,7 +450,7 @@ doneu:
         // ;
 decvloop:
         // decv
-        eax.h -= sized_params->decv;
+        eax.h -= sp.decv;
         // add		edi,ebp
         edi.v += ebp.v;
         // add		ecx,edx
@@ -444,8 +459,8 @@ decvloop:
         if (ecx.int_val < 0) {
             goto decvloop;
         }
-        // mov		work.tsl.dv_numerator,edi
-        work.tsl.dv_numerator = edi.v;
+        // mov		tsl.dv_numerator,edi
+        tsl.dv_numerator = edi.v;
         // jmp		donev
         goto donev;
 nodecv:
@@ -458,7 +473,7 @@ nodecv:
         // ;
 incvloop:
         // incv
-        eax.h += sized_params->incv;
+        eax.h += sp.incv;
         // sub		edi,ebp
         edi.v -= ebp.v;
         // sub		ecx,edx
@@ -468,8 +483,8 @@ incvloop:
         if (ecx.int_val >= edx.int_val) {
             goto incvloop;
         }
-        // mov		work.tsl.dv_numerator,edi
-        work.tsl.dv_numerator = edi.v;
+        // mov		tsl.dv_numerator,edi
+        tsl.dv_numerator = edi.v;
         // vslot
         // no-op
     } else {
@@ -495,9 +510,9 @@ stepvloop:
         //         decv
         // endif
         if (vdirn == eScan_direction_i) {
-            eax.h += sized_params->incv;
+            eax.h += sp.incv;
         } else {
-            eax.h -= sized_params->decv;
+            eax.h -= sp.decv;
         }
 
         // sub_&vdirn	edi,ebp
@@ -523,8 +538,8 @@ stepvloop:
             }
         }
 
-		// mov		work.tsl.dv_numerator,edi
-        work.tsl.dv_numerator = edi.v;
+		// mov		tsl.dv_numerator,edi
+        tsl.dv_numerator = edi.v;
 		// vslot
         // no-op
     }
@@ -534,22 +549,30 @@ donev:
 	// ; Fix wrapping of source offset after modification
 	// ;
     // post1
-    eax.v >>= sized_params->post1;
-    // mov	work.tsl.v_numerator,ecx
-    work.tsl.v_numerator = ecx.v;
+    eax.v >>= sp.post1;
+    // mov	tsl.v_numerator,ecx
+    tsl.v_numerator = ecx.v;
 
     // post2
-    eax.v &= sized_params->post2;
-    // mov		ebp,work.tsl.zdest
-    ebp.ptr_v = work.tsl.zdest;
+    eax.v &= sp.post2;
+    // mov		ebp,tsl.zdest
+    ebp.ptr_v = tsl.zdest;
 
-    // mov		ebx,work.tsl.z
-    ebx.v = work.tsl.z;
+    // mov		ebx,tsl.z
+    ebx.v = tsl.z;
     // jmp		next_pixel
     goto next_pixel;
+
+done:
+    // write the emulated machine state back for any code that inspects it afterwards
+    work.tsl = tsl;
+    g_state->cf = x86_state.cf;
+    *g_eax = eax; *g_ebx = ebx; *g_ecx = ecx; *g_edx = edx;
+    *g_esi = esi; *g_edi = edi; *g_ebp = ebp;
 }
 
-static inline void ScanlineRender_ZPTI_I8_D16(int dirn, tSize_specific_params *sized_params, int udirn, int vdirn, tFog_enabled fogging, tBlend_enabled blend) {
+
+static inline __attribute__((always_inline)) void ScanlineRender_ZPTI_I8_D16(int dirn, tSize_specific_params *sized_params, int udirn, int vdirn, tFog_enabled fogging, tBlend_enabled blend) {
     // mov		edx,work.pu.current
     edx.v = work.pu.current;
     // mov		esi,work.pu.grad_x
@@ -1046,7 +1069,7 @@ donev:
 // 	<>,<>
 
 
-static inline void TrapeziumRender_ZPT_I8_D16(int dirn, tSize_specific_params *sized_params, tFog_enabled fogging, tBlend_enabled blend) {
+static inline __attribute__((always_inline)) void TrapeziumRender_ZPT_I8_D16(int dirn, tSize_specific_params *sized_params, tFog_enabled fogging, tBlend_enabled blend) {
 
     // mov		ebx,work_top_count	; check for empty trapezium
     ebx.v = work_top_count;
@@ -1441,7 +1464,7 @@ carry:
     }
 }
 
-static inline void TrapeziumRender_ZPTI_I8_D16(int dirn, tSize_specific_params *sized_params, tFog_enabled fog, tBlend_enabled blend) {
+static inline __attribute__((always_inline)) void TrapeziumRender_ZPTI_I8_D16(int dirn, tSize_specific_params *sized_params, tFog_enabled fog, tBlend_enabled blend) {
 
     // mov		ebx,work_top_count	; check for empty trapezium
     ebx.v = work_top_count;
@@ -2008,7 +2031,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_32_FLAT(brp_block *block, brp_vertex
     // Not implemented
     BrAbort();
 }
-void BR_ASM_CALL TriangleRender_ZPT_I8_D16_32(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+static void TriangleRender_ZPT_I8_D16_32_Ref(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
     tSize_specific_params *params = &size_specific_params[eTrapezium_size_32x32];
     TriangleSetup_ZPT(v0, v1, v2);
     // jc TriangleRasterise_ZT_I8_D16_32
@@ -2141,6 +2164,147 @@ reversed:
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_64_b
     TrapeziumRender_ZPT_I8_D16(DIR_B, params, eFog_no, eBlend_no);
+}
+
+static void TriangleRender_ZPT_I8_D16_32_Fast(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    tSize_specific_params *params = &size_specific_params[eTrapezium_size_32x32];
+    TriangleSetup_ZPT(v0, v1, v2);
+    // jc TriangleRasterise_ZT_I8_D16_32
+    if (x86_state.cf) {
+        TriangleRender_ZT_I8_D16_POW2(block, 5, 1, v0, v1, v2);
+        return;
+    }
+
+    // ; Calculate address of first scanline in colour and depth buffers
+	// ;
+    // mov		esi,work_main_y
+    esi.v = work_main_y;
+    // mov		eax,work.colour.base
+    eax.v = WORK_COLOUR_BASE;
+    // dec		esi
+    esi.v--;
+    // mov		ebx,work.colour.stride_b
+    ebx.v = work.colour.stride_b;
+    // mov		ecx,work.depth.base
+    ecx.v = WORK_DEPTH_BASE;
+    // mov		edx,work.depth.stride_b
+    edx.v = work.depth.stride_b;
+    // imul	ebx,esi
+    ebx.int_val *= esi.int_val;
+    // imul	edx,esi
+    edx.int_val *= esi.int_val;
+    // add		eax,ebx
+    eax.v += ebx.v;
+    // add		ecx,edx
+    ecx.v += edx.v;
+    // dec		eax
+    eax.v--;
+    // sub		ecx,2
+    ecx.v -= 2;
+    // mov		workspace.scanAddress,eax
+    workspace.scanAddress = eax.v;
+    // mov		workspace.depthAddress,ecx
+    workspace.depthAddress = ecx.v;
+
+    // ; Swap integer and fractional parts of major edge starting value and delta and z gradient
+	// ; Copy some values into perspective texture mappng workspace
+	// ; Calculate offset of starting pixel in texture map
+	// ;
+    // mov		eax,work_main_i
+    eax.v = work_main_i;
+    // mov		ebx,work_main_d_i
+    ebx.v = work_main_d_i;
+    // ror		eax,16
+    ROR16(eax);
+    // cmp		ebx,80000000h
+    CMP(ebx.v, 0x80000000);
+    // adc		ebx,-1
+    ADC(ebx.v, -1);
+    // mov		ecx,work_pz_grad_x
+    ecx.v = work_pz_grad_x;
+    // ror		ebx,16
+    ROR16(ebx);
+    // cmp		ecx,80000000h
+    CMP(ecx.v, 0x80000000);
+    // adc		ecx,-1
+    ADC(ecx.v, -1);
+    // mov		work_main_i,eax
+    work_main_i = eax.v;
+    // ror		ecx,16
+    ROR16(ecx);
+    // mov		al,byte ptr work.awsl.u_current
+    eax.l = work.awsl.u_current;
+    // mov		ah,byte ptr work.awsl.v_current
+    eax.h = work.awsl.v_current;
+    // mov		work_main_d_i,ebx
+    work_main_d_i = ebx.v;
+    // shl		al,3
+    eax.l <<= 3;
+    // mov		work.tsl.dz,ecx
+    work.tsl.dz = ecx.v;
+    // shr		eax,3
+    eax.v >>= 3;
+    // mov		ebx,work.pq.grad_x
+    ebx.v = work.pq.grad_x;
+    // and		eax,31*33
+    eax.v &= 31*33;
+    // mov		work.tsl.ddenominator,ebx
+    work.tsl.ddenominator = ebx.v;
+    // mov		work.tsl.source,eax
+    work.tsl.source = eax.v;
+    // mov		eax,work.tsl.direction
+    eax.v = work.tsl.direction;
+
+    // ; Check scan direction and use appropriate rasteriser
+	// ;
+    // test	eax,eax
+    // jnz		reversed
+    if (eax.v != 0) {
+        goto reversed;
+    }
+    // call    TrapeziumRender_ZPT_I8_D16_32_f
+    FastTrapezium_ZPT_I8_D16(DIR_F, 0);
+    // mov		eax,work_bot_i
+    eax.v = work_bot_i;
+    // mov		ebx,work_bot_d_i
+    ebx.v = work_bot_d_i;
+    // mov		ecx,work_bot_count
+    ecx.v = work_bot_count;
+    // mov		work_top_i,eax
+    work_top_i = eax.v;
+    // mov		work_top_d_i,ebx
+    work_top_d_i = ebx.v;
+    // mov		work_top_count,ecx
+    work_top_count = ecx.v;
+    // call    TrapeziumRender_ZPT_I8_D16_32_f
+   FastTrapezium_ZPT_I8_D16(DIR_F, 0);
+    // ret
+    return;
+
+reversed:
+
+    // call    TrapeziumRender_ZPT_I8_D16_32_b
+   FastTrapezium_ZPT_I8_D16(DIR_B, 0);
+    // mov		eax,work_bot_i
+    eax.v = work_bot_i;
+    // mov		ebx,work_bot_d_i
+    ebx.v = work_bot_d_i;
+    // mov		ecx,work_bot_count
+    ecx.v = work_bot_count;
+    // mov		work_top_i,eax
+    work_top_i = eax.v;
+    // mov		work_top_d_i,ebx
+    work_top_d_i = ebx.v;
+    // mov		work_top_count,ecx
+    work_top_count = ecx.v;
+    // call    TrapeziumRender_ZPT_I8_D16_64_b
+    FastTrapezium_ZPT_I8_D16(DIR_B, 0);
+}
+
+void BR_ASM_CALL TriangleRender_ZPT_I8_D16_32(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    PENTPRIM_DISPATCH("TriangleRender_ZPT_I8_D16",
+        TriangleRender_ZPT_I8_D16_32_Ref(block, v0, v1, v2),
+        TriangleRender_ZPT_I8_D16_32_Fast(block, v0, v1, v2));
 }
 
 void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_64(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
@@ -2301,7 +2465,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_64_FLAT(brp_block *block, brp_vertex
     BrAbort();
 }
 
-void BR_ASM_CALL TriangleRender_ZPT_I8_D16_64(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+static void TriangleRender_ZPT_I8_D16_64_Ref(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
     tSize_specific_params *params = &size_specific_params[eTrapezium_size_64x64];
     TriangleSetup_ZPT(v0, v1, v2);
     // jc TriangleRasterise_ZT_I8_D16_64
@@ -2435,6 +2599,148 @@ reversed:
     // call    TrapeziumRender_ZPT_I8_D16_64_b
     TrapeziumRender_ZPT_I8_D16(DIR_B, params, eFog_no, eBlend_no);
 
+}
+
+static void TriangleRender_ZPT_I8_D16_64_Fast(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    tSize_specific_params *params = &size_specific_params[eTrapezium_size_64x64];
+    TriangleSetup_ZPT(v0, v1, v2);
+    // jc TriangleRasterise_ZT_I8_D16_64
+    if (x86_state.cf) {
+        TriangleRender_ZT_I8_D16_POW2(block, 6, 1, v0, v1, v2);
+        return;
+    }
+
+    // ; Calculate address of first scanline in colour and depth buffers
+	// ;
+    // mov		esi,work_main_y
+    esi.v = work_main_y;
+    // mov		eax,work.colour.base
+    eax.v = WORK_COLOUR_BASE;
+    // dec		esi
+    esi.v--;
+    // mov		ebx,work.colour.stride_b
+    ebx.v = work.colour.stride_b;
+    // mov		ecx,work.depth.base
+    ecx.v = WORK_DEPTH_BASE;
+    // mov		edx,work.depth.stride_b
+    edx.v = work.depth.stride_b;
+    // imul	ebx,esi
+    ebx.int_val *= esi.int_val;
+    // imul	edx,esi
+    edx.int_val *= esi.int_val;
+    // add		eax,ebx
+    eax.v += ebx.v;
+    // add		ecx,edx
+    ecx.v += edx.v;
+    // dec		eax
+    eax.v--;
+    // sub		ecx,2
+    ecx.v -= 2;
+    // mov		workspace.scanAddress,eax
+    workspace.scanAddress = eax.v;
+    // mov		workspace.depthAddress,ecx
+    workspace.depthAddress = ecx.v;
+
+    // ; Swap integer and fractional parts of major edge starting value and delta and z gradient
+	// ; Copy some values into perspective texture mappng workspace
+	// ; Calculate offset of starting pixel in texture map
+	// ;
+    // mov		eax,work_main_i
+    eax.v = work_main_i;
+    // mov		ebx,work_main_d_i
+    ebx.v = work_main_d_i;
+    // ror		eax,16
+    ROR16(eax);
+    // cmp		ebx,80000000h
+    CMP(ebx.v, 0x80000000);
+    // adc		ebx,-1
+    ADC(ebx.v, -1);
+    // mov		ecx,work_pz_grad_x
+    ecx.v = work_pz_grad_x;
+    // ror		ebx,16
+    ROR16(ebx);
+    // cmp		ecx,80000000h
+    CMP(ecx.v, 0x80000000);
+    // adc		ecx,-1
+    ADC(ecx.v, -1);
+    // mov		work_main_i,eax
+    work_main_i = eax.v;
+    // ror		ecx,16
+    ROR16(ecx);
+    // mov		al,byte ptr work.awsl.u_current
+    eax.l = work.awsl.u_current;
+    // mov		ah,byte ptr work.awsl.v_current
+    eax.h = work.awsl.v_current;
+    // mov		work_main_d_i,ebx
+    work_main_d_i = ebx.v;
+    // shl		al,2
+    eax.l <<= 2;
+    // mov		work.tsl.dz,ecx
+    work.tsl.dz = ecx.v;
+    // shr		eax,2
+    eax.v >>= 2;
+    // mov		ebx,work.pq.grad_x
+    ebx.v = work.pq.grad_x;
+    // and		eax,63*65
+    eax.v &= 63*65;
+    // mov		work.tsl.ddenominator,ebx
+    work.tsl.ddenominator = ebx.v;
+    // mov		work.tsl.source,eax
+    work.tsl.source = eax.v;
+    // mov		eax,work.tsl.direction
+    eax.v = work.tsl.direction;
+
+    // ; Check scan direction and use appropriate rasteriser
+	// ;
+    // test	eax,eax
+    // jnz		reversed
+    if (eax.v != 0) {
+        goto reversed;
+    }
+    // call    TrapeziumRender_ZPT_I8_D16_64_f
+    FastTrapezium_ZPT_I8_D16(DIR_F, 1);
+    // mov		eax,work_bot_i
+    eax.v = work_bot_i;
+    // mov		ebx,work_bot_d_i
+    ebx.v = work_bot_d_i;
+    // mov		ecx,work_bot_count
+    ecx.v = work_bot_count;
+    // mov		work_top_i,eax
+    work_top_i = eax.v;
+    // mov		work_top_d_i,ebx
+    work_top_d_i = ebx.v;
+    // mov		work_top_count,ecx
+    work_top_count = ecx.v;
+    // call    TrapeziumRender_ZPT_I8_D16_64_f
+   FastTrapezium_ZPT_I8_D16(DIR_F, 1);
+    // ret
+    return;
+
+reversed:
+
+    // call    TrapeziumRender_ZPT_I8_D16_64_b
+   FastTrapezium_ZPT_I8_D16(DIR_B, 1);
+    // mov		eax,work_bot_i
+    eax.v = work_bot_i;
+    // mov		ebx,work_bot_d_i
+    ebx.v = work_bot_d_i;
+    // mov		ecx,work_bot_count
+    ecx.v = work_bot_count;
+    // mov		work_top_i,eax
+    work_top_i = eax.v;
+    // mov		work_top_d_i,ebx
+    work_top_d_i = ebx.v;
+    // mov		work_top_count,ecx
+    work_top_count = ecx.v;
+    // call    TrapeziumRender_ZPT_I8_D16_64_b
+    FastTrapezium_ZPT_I8_D16(DIR_B, 1);
+
+}
+
+void BR_ASM_CALL TriangleRender_ZPT_I8_D16_64(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    PENTPRIM_DISPATCH("TriangleRender_ZPT_I8_D16",
+        TriangleRender_ZPT_I8_D16_64_Ref(block, v0, v1, v2),
+        TriangleRender_ZPT_I8_D16_64_Fast(block, v0, v1, v2));
 }
 
 void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_128(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
@@ -2744,7 +3050,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_256_FLAT(brp_block *block, brp_verte
     BrAbort();
 }
 
-void BR_ASM_CALL TriangleRender_ZPT_I8_D16_256(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+static void TriangleRender_ZPT_I8_D16_256_Ref(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
     tSize_specific_params *params = &size_specific_params[eTrapezium_size_256x256];
     TriangleSetup_ZPT(v0, v1, v2);
     // jc TriangleRasterise_ZT_I8_D16_256
@@ -2873,6 +3179,143 @@ reversed:
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_256_b
     TrapeziumRender_ZPT_I8_D16(DIR_B, params, eFog_no, eBlend_no);
+}
+
+static void TriangleRender_ZPT_I8_D16_256_Fast(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    tSize_specific_params *params = &size_specific_params[eTrapezium_size_256x256];
+    TriangleSetup_ZPT(v0, v1, v2);
+    // jc TriangleRasterise_ZT_I8_D16_256
+    if (x86_state.cf) {
+        TriangleRender_ZT_I8_D16_POW2(block, 8, 1, v0, v1, v2);
+        return;
+    }
+
+    // ; Calculate address of first scanline in colour and depth buffers
+	// ;
+    // mov		esi,work_main_y
+    esi.v = work_main_y;
+    // mov		eax,work.colour.base
+    eax.v = WORK_COLOUR_BASE;
+    // dec		esi
+    esi.v--;
+    // mov		ebx,work.colour.stride_b
+    ebx.v = work.colour.stride_b;
+    // mov		ecx,work.depth.base
+    ecx.v = WORK_DEPTH_BASE;
+    // mov		edx,work.depth.stride_b
+    edx.v = work.depth.stride_b;
+    // imul	ebx,esi
+    ebx.int_val *= esi.int_val;
+    // imul	edx,esi
+    edx.int_val *= esi.int_val;
+    // add		eax,ebx
+    eax.v += ebx.v;
+    // add		ecx,edx
+    ecx.v += edx.v;
+    // dec		eax
+    eax.v--;
+    // sub		ecx,2
+    ecx.v -= 2;
+    // mov		workspace.scanAddress,eax
+    workspace.scanAddress = eax.v;
+    // mov		workspace.depthAddress,ecx
+    workspace.depthAddress = ecx.v;
+
+    // ; Swap integer and fractional parts of major edge starting value and delta and z gradient
+	// ; Copy some values into perspective texture mappng workspace
+	// ; Calculate offset of starting pixel in texture map
+	// ;
+    // mov		eax,work_main_i
+    eax.v = work_main_i;
+    // mov		ebx,work_main_d_i
+    ebx.v = work_main_d_i;
+    // ror		eax,16
+    ROR16(eax);
+    // cmp		ebx,80000000h
+    CMP(ebx.v, 0x80000000);
+    // adc		ebx,-1
+    ADC(ebx.v, -1);
+    // mov		ecx,work_pz_grad_x
+    ecx.v = work_pz_grad_x;
+    // ror		ebx,16
+    ROR16(ebx);
+    // cmp		ecx,80000000h
+    CMP(ecx.v, 0x80000000);
+    // adc		ecx,-1
+    ADC(ecx.v, -1);
+    // mov		work_main_i,eax
+    work_main_i = eax.v;
+    // ror		ecx,16
+    ROR16(ecx);
+    // mov		work_main_d_i,ebx
+    work_main_d_i = ebx.v;
+    // xor eax,eax
+    eax.v = 0;
+    // mov		work.tsl.dz,ecx
+    work.tsl.dz = ecx.v;
+    // mov		al,byte ptr work.awsl.u_current
+    eax.l = work.awsl.u_current;
+    // mov		ebx,work.pq.grad_x
+    ebx.v = work.pq.grad_x;
+    // mov		ah,byte ptr work.awsl.v_current
+    eax.h = work.awsl.v_current;
+    // mov		work.tsl.ddenominator,ebx
+    work.tsl.ddenominator = ebx.v;
+    // mov		work.tsl.source,eax
+    work.tsl.source = eax.v;
+    // mov		eax,work.tsl.direction
+    eax.v = work.tsl.direction;
+
+    // ; Check scan direction and use appropriate rasteriser
+	// ;
+    // test	eax,eax
+    // jnz		reversed
+    if (eax.v != 0) {
+        goto reversed;
+    }
+    // call    TrapeziumRender_ZPT_I8_D16_256_f
+    FastTrapezium_ZPT_I8_D16(DIR_F, 3);
+    // mov		eax,work_bot_i
+    eax.v = work_bot_i;
+    // mov		ebx,work_bot_d_i
+    ebx.v = work_bot_d_i;
+    // mov		ecx,work_bot_count
+    ecx.v = work_bot_count;
+    // mov		work_top_i,eax
+    work_top_i = eax.v;
+    // mov		work_top_d_i,ebx
+    work_top_d_i = ebx.v;
+    // mov		work_top_count,ecx
+    work_top_count = ecx.v;
+    // call    TrapeziumRender_ZPT_I8_D16_256_f
+   FastTrapezium_ZPT_I8_D16(DIR_F, 3);
+    // ret
+    return;
+
+reversed:
+
+    // call    TrapeziumRender_ZPT_I8_D16_256_b
+   FastTrapezium_ZPT_I8_D16(DIR_B, 3);
+    // mov		eax,work_bot_i
+    eax.v = work_bot_i;
+    // mov		ebx,work_bot_d_i
+    ebx.v = work_bot_d_i;
+    // mov		ecx,work_bot_count
+    ecx.v = work_bot_count;
+    // mov		work_top_i,eax
+    work_top_i = eax.v;
+    // mov		work_top_d_i,ebx
+    work_top_d_i = ebx.v;
+    // mov		work_top_count,ecx
+    work_top_count = ecx.v;
+    // call    TrapeziumRender_ZPT_I8_D16_256_b
+    FastTrapezium_ZPT_I8_D16(DIR_B, 3);
+}
+
+void BR_ASM_CALL TriangleRender_ZPT_I8_D16_256(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    PENTPRIM_DISPATCH("TriangleRender_ZPT_I8_D16",
+        TriangleRender_ZPT_I8_D16_256_Ref(block, v0, v1, v2),
+        TriangleRender_ZPT_I8_D16_256_Fast(block, v0, v1, v2));
 }
 
 void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_1024(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {

@@ -1,6 +1,8 @@
 #include "brender.h"
 #include "fpsetup.h"
 #include "fpwork.h"
+#include "fastprim.h"
+#include "verify.h"
 #include <stdarg.h>
 #include "work.h"
 #include "x86emu.h"
@@ -241,7 +243,8 @@ lineDrawn:
     }
 }
 
-void BR_ASM_CALL TriangleRender_ZTI_I8_D16_POW2(brp_block *block, int pow2, int skip_setup, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
+// Setup and span start addresses, shared by the original and the rewritten span loops
+static void TriangleRender_ZTI_I8_D16_POW2_Prepare(int skip_setup, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
     /*
 	brp_vertex *v0; // [esp+18h] [ebp+Ch]
     brp_vertex *v1; // [esp+1Ch] [ebp+10h]
@@ -355,6 +358,11 @@ void BR_ASM_CALL TriangleRender_ZTI_I8_D16_POW2(brp_block *block, int pow2, int 
 // 	DRAW_ZT_I8_D16_POW2 x2,DRAW_RL,bottom,pow2
 // 	ret
 // eax is 0, ZF=1
+}
+
+static void TriangleRender_ZTI_I8_D16_POW2_Ref(int pow2, int skip_setup, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
+	TriangleRender_ZTI_I8_D16_POW2_Prepare(skip_setup, v0, v1, v2);
+	eax.v = workspace.flip;
 	if (eax.v == 0) {
 		DRAW_ZTI_I8_D16_POW2 (&workspace.x1, &workspace.d_x1, DRAW_LR,&workspace.topCount,pow2);
 		DRAW_ZTI_I8_D16_POW2 (&workspace.x2, &workspace.d_x2, DRAW_LR,&workspace.bottomCount,pow2);
@@ -362,6 +370,17 @@ void BR_ASM_CALL TriangleRender_ZTI_I8_D16_POW2(brp_block *block, int pow2, int 
 		DRAW_ZTI_I8_D16_POW2 (&workspace.x1, &workspace.d_x1, DRAW_RL,&workspace.topCount,pow2);
 		DRAW_ZTI_I8_D16_POW2 (&workspace.x2, &workspace.d_x2, DRAW_RL,&workspace.bottomCount,pow2);
 	}
+}
+
+static void TriangleRender_ZTI_I8_D16_POW2_Fast(int pow2, int skip_setup, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
+	TriangleRender_ZTI_I8_D16_POW2_Prepare(skip_setup, v0, v1, v2);
+	FastDraw_ZTI_I8_D16_POW2(workspace.flip != 0, pow2);
+}
+
+void BR_ASM_CALL TriangleRender_ZTI_I8_D16_POW2(brp_block *block, int pow2, int skip_setup, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
+	PENTPRIM_DISPATCH("TriangleRender_ZTI_I8_D16_POW2",
+		TriangleRender_ZTI_I8_D16_POW2_Ref(pow2, skip_setup, v0, v1, v2),
+		TriangleRender_ZTI_I8_D16_POW2_Fast(pow2, skip_setup, v0, v1, v2));
 }
 
 void BR_ASM_CALL TriangleRender_ZTI_I8_D16_8(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {

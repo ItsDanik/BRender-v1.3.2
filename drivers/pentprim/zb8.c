@@ -8,6 +8,8 @@
 #include "work.h"
 #include "x86emu.h"
 #include "common.h"
+#include "fastprim.h"
+#include "verify.h"
 
 // ;*****************
 // ; FLAT RASTERISER
@@ -142,7 +144,8 @@ lineDrawn:
     }
 }
 
-void BR_ASM_CALL TriangleRender_Z_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
+// Setup and span start addresses, shared by the original and the rewritten loops
+static void TriangleRender_Z_I8_D16_Prepare(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
     workspace.v0 = v0;
     workspace.v1 = v1;
     workspace.v2 = v2;
@@ -239,6 +242,11 @@ void BR_ASM_CALL TriangleRender_Z_I8_D16(brp_block *block, brp_vertex *v0, brp_v
     // ;half cycle wasted
     // test eax,eax
     // jnz	drawRL
+}
+
+static void TriangleRender_Z_I8_D16_Ref(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    TriangleRender_Z_I8_D16_Prepare(block, v0, v1, v2);
+    eax.v = workspace.flip;
     if (eax.v == 0) {
         // DRAW_Z_I8_D16 x1,DRAW_LR,top
         DRAW_Z_I8_D16(&workspace.x1, &workspace.d_x1, DRAW_LR, &workspace.topCount);
@@ -250,6 +258,17 @@ void BR_ASM_CALL TriangleRender_Z_I8_D16(brp_block *block, brp_vertex *v0, brp_v
         // DRAW_Z_I8_D16 x2,DRAW_RL,bottom
         DRAW_Z_I8_D16(&workspace.x2, &workspace.d_x2, DRAW_RL, &workspace.bottomCount);
     }
+}
+
+static void TriangleRender_Z_I8_D16_Fast(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    TriangleRender_Z_I8_D16_Prepare(block, v0, v1, v2);
+    FastDraw_Z_I8_D16(workspace.flip != 0);
+}
+
+void BR_ASM_CALL TriangleRender_Z_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
+    PENTPRIM_DISPATCH("TriangleRender_Z_I8_D16",
+        TriangleRender_Z_I8_D16_Ref(block, v0, v1, v2),
+        TriangleRender_Z_I8_D16_Fast(block, v0, v1, v2));
 }
 
 void BR_ASM_CALL TriangleRender_Z_I8_D16_ShadeTable(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {

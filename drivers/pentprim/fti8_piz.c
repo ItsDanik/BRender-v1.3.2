@@ -6,6 +6,8 @@
 #include "work.h"
 #include "x86emu.h"
 #include "common.h"
+#include "fastprim.h"
+#include "verify.h"
 
 #define work_main_i				workspace.xm
 #define work_main_d_i			workspace.d_xm
@@ -247,7 +249,8 @@ no_pixels:
     }
 }
 
-void BR_ASM_CALL TriangleRender_ZI_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+// Setup and span start addresses, shared by the original and the rewritten loops
+static void TriangleRender_ZI_I8_D16_Prepare(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
     // ; Get pointers to vertex structures
 	// ;
 	// 	mov	eax,pvertex_0
@@ -365,6 +368,11 @@ void BR_ASM_CALL TriangleRender_ZI_I8_D16(brp_block *block, brp_vertex *v0, brp_
     //jnz	reversed
     //jump is zf is 0
 
+}
+
+static void TriangleRender_ZI_I8_D16_Ref(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    TriangleRender_ZI_I8_D16_Prepare(block, v0, v1, v2);
+    eax.v = workspace.flip;
     if (eax.v == 0) {
         TRAPEZIUM_ZI_I8_D16(&workspace.topCount, &workspace.x1, &workspace.d_x1, DIR_F);
         TRAPEZIUM_ZI_I8_D16(&workspace.bottomCount, &workspace.x2, &workspace.d_x2, DIR_F);
@@ -373,4 +381,15 @@ void BR_ASM_CALL TriangleRender_ZI_I8_D16(brp_block *block, brp_vertex *v0, brp_
         TRAPEZIUM_ZI_I8_D16(&workspace.bottomCount, &workspace.x2, &workspace.d_x2, DIR_B);
     }
 
+}
+
+static void TriangleRender_ZI_I8_D16_Fast(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    TriangleRender_ZI_I8_D16_Prepare(block, v0, v1, v2);
+    FastTrapezium_ZI_I8_D16(workspace.flip != 0);
+}
+
+void BR_ASM_CALL TriangleRender_ZI_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2) {
+    PENTPRIM_DISPATCH("TriangleRender_ZI_I8_D16",
+        TriangleRender_ZI_I8_D16_Ref(block, v0, v1, v2),
+        TriangleRender_ZI_I8_D16_Fast(block, v0, v1, v2));
 }
