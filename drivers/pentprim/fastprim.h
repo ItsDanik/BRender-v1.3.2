@@ -13,6 +13,10 @@ void FastDraw_ZTI_I8_D16_POW2(int right_to_left, int pow2);
  * size: 0 = 32x32, 1 = 64x64, 2 = 128x128, 3 = 256x256 texture */
 void FastTrapezium_ZPT_I8_D16(int dir, int size);
 
+/* The same for a ZPTI (lit) triangle, "Fast" renderer only: not bit-identical
+ * to TrapeziumRender_ZPTI_I8_D16 */
+void FastTrapezium_ZPTI_I8_D16(int dir, int size);
+
 /* Both halves of a flat triangle prepared by the Z setup (zb8.c) */
 void FastDraw_Z_I8_D16(int right_to_left);
 

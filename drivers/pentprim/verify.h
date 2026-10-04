@@ -13,11 +13,16 @@
  * PENTPRIM_REFERENCE=1 runs only the original code (for A/B benchmarks).
  * PENTPRIM_TIMING=1 alternates original and rewrite call by call and
  * reports the average time per call of each at exit.
+ *
+ * gPentprim_fast (PENTPRIM_FAST=1) selects the "Fast" renderer: perspective
+ * texture mapping by subdivision (fastprim.c), which is not bit-identical.
+ * It is ignored inside verified/timed calls and with PENTPRIM_REFERENCE.
  */
 
 extern int gPentprim_verify;
 extern int gPentprim_reference;
 extern int gPentprim_timing;
+extern int gPentprim_fast;
 
 void PentprimVerify_Begin(void);
 void PentprimVerify_Switch(void);

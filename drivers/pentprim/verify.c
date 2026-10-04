@@ -15,6 +15,7 @@
 
 int gPentprim_verify;
 int gPentprim_reference;
+int gPentprim_fast;
 int gPentprim_timing;
 int gPentprim_nested;
 
@@ -129,6 +130,11 @@ __attribute__((constructor)) static void verify_init(void) {
     gPentprim_reference = env != NULL && env[0] == '1';
     if (gPentprim_reference) {
         fprintf(stderr, "pentprim: using the original rasteriser functions only\n");
+    }
+    env = getenv("PENTPRIM_FAST");
+    gPentprim_fast = env != NULL && env[0] == '1';
+    if (gPentprim_fast) {
+        fprintf(stderr, "pentprim: using the fast (not bit-identical) perspective texture mapper\n");
     }
     if (gPentprim_verify) {
         fprintf(stderr, "pentprim: verifying rewritten rasteriser functions against the originals\n");

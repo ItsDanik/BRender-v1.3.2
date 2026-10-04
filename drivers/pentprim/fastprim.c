@@ -13,6 +13,7 @@
 #include "brender.h"
 #include "common.h"
 #include "fpwork.h"
+#include "verify.h"
 #include "work.h"
 
 #include <stdio.h>
@@ -447,10 +448,13 @@ static inline __attribute__((always_inline)) void zpt_scanline(const int predict
 
     out->zdest_set = 0;
     for (;;) {
-        const br_uint_8 texel = texture[source];
-        if ((br_uint_16)z <= *zdest && texel != 0) {
-            *zdest = (br_uint_16)z;
-            *dest = texel;
+        // depth first: no texture fetch (cache miss) for hidden pixels
+        if ((br_uint_16)z <= *zdest) {
+            const br_uint_8 texel = texture[source];
+            if (texel != 0) {
+                *zdest = (br_uint_16)z;
+                *dest = texel;
+            }
         }
         source <<= sz->pre;
         if (dir == DIR_F ? dest + 1 > end : dest - 1 < end) {
@@ -824,6 +828,306 @@ static void zpt_trapezium_variant(const int predict, int dir, int size) {
 }
 
 /*
+ * "Fast" renderer (gPentprim_fast): perspective texture mapping by
+ * subdivision. NOT bit-identical to the original.
+ *
+ * The original steps an error term per pixel to get the exact texel of every
+ * pixel. Here the exact texture coordinate is only worked out every
+ * FAST_RUN pixels (one divide) and interpolated linearly in between, as in
+ * most software renderers of the time. Edges, depth and the first and last
+ * texel of every scanline are the same as in the exact version, the texels
+ * in between can be off by a fraction of a texel on steep perspective.
+ *
+ * With `lit` this also replaces the original ZPTI (shade table) trapezium.
+ */
+#define FAST_RUN_SHIFT 4
+#define FAST_RUN (1 << FAST_RUN_SHIFT)
+
+// 1/n for the last, shorter run of a scanline
+static const float fast_recip[FAST_RUN] = {
+    0.0f, 1.0f / 1, 1.0f / 2, 1.0f / 3, 1.0f / 4, 1.0f / 5, 1.0f / 6, 1.0f / 7,
+    1.0f / 8, 1.0f / 9, 1.0f / 10, 1.0f / 11, 1.0f / 12, 1.0f / 13, 1.0f / 14, 1.0f / 15
+};
+
+static inline br_int_32 fast_fix(float f) {
+    if (f > 1e9f) {
+        f = 1e9f;
+    }
+    if (f < -1e9f) {
+        f = -1e9f;
+    }
+    return (br_int_32)f;
+}
+
+/*
+ * One scanline of `count` pixels. u_num/q and v_num/q are the position inside
+ * the texel `source`, the gradients are per pixel in the direction of travel.
+ * u and v are kept as 16.16 texels; only the low `bits` of the integer part
+ * are used, so they wrap like the original.
+ */
+static inline __attribute__((always_inline)) void zpt_fast_scanline(const int lit, const int dir, const int bits,
+    br_uint_8* dest, br_uint_16* zdest, br_int_32 count, const br_uint_32 source, br_uint_32 z, br_uint_32 i,
+    const br_int_32 q, const br_int_32 dq, const br_int_32 u_num, const br_int_32 du_num, const br_int_32 v_num, const br_int_32 dv_num) {
+
+    const br_uint_8* const texture = work.texture.base;
+    const br_uint_8* const shade = work.shade_table;
+    const br_uint_32 dz = work.tsl.dz;
+    const br_uint_32 di = work.tsl.di;
+    const br_uint_32 mask = (1u << bits) - 1;
+    const br_uint_32 vmask = mask << bits;
+    const br_uint_32 u_base = (source & mask) << 16;
+    const br_uint_32 v_base = ((source >> bits) & mask) << 16;
+    const float fq = (float)q, fdq = (float)dq;
+    const float fu = (float)u_num, fdu = (float)du_num;
+    const float fv = (float)v_num, fdv = (float)dv_num;
+    // q is positive inside a triangle. If it is not at either end of the
+    // scanline (degenerate input), draw the scanline with its first texel.
+    const int flat = q <= 0 || (br_int_64)q + (br_int_64)(count - 1) * dq <= 0;
+    br_uint_32 u, v, u_end, v_end;
+    br_int_32 du, dv;
+    br_int_32 k = 0;
+
+    if (flat) {
+        u = u_base;
+        v = v_base;
+    } else {
+        const float r = 65536.0f / fq;
+        u = u_base + (br_uint_32)fast_fix(fu * r);
+        v = v_base + (br_uint_32)fast_fix(fv * r);
+    }
+
+    while (count > 0) {
+        br_int_32 n;
+
+        // exact coordinates at the end of this run. The last run ends on the
+        // last pixel so nothing is sampled outside the scanline.
+        if (count > FAST_RUN) {
+            n = FAST_RUN;
+            k += FAST_RUN;
+        } else {
+            n = count;
+            k += count - 1;
+        }
+        if (flat || count == 1) {
+            u_end = u;
+            v_end = v;
+            du = 0;
+            dv = 0;
+        } else {
+            const float fk = (float)k;
+            const float r = 65536.0f / (fq + fk * fdq);
+            u_end = u_base + (br_uint_32)fast_fix((fu + fk * fdu) * r);
+            v_end = v_base + (br_uint_32)fast_fix((fv + fk * fdv) * r);
+            if (count > FAST_RUN) {
+                du = (br_int_32)(u_end - u) >> FAST_RUN_SHIFT;
+                dv = (br_int_32)(v_end - v) >> FAST_RUN_SHIFT;
+            } else {
+                const float rn = fast_recip[count - 1];
+                du = (br_int_32)((float)(br_int_32)(u_end - u) * rn);
+                dv = (br_int_32)((float)(br_int_32)(v_end - v) * rn);
+            }
+        }
+        count -= n;
+
+        do {
+            // depth first: no texture fetch (cache miss) for hidden pixels
+            if ((br_uint_16)z <= *zdest) {
+                const br_uint_8 texel = texture[((v >> (16 - bits)) & vmask) | ((u >> 16) & mask)];
+                if (texel != 0) {
+                    *zdest = (br_uint_16)z;
+                    *dest = lit ? shade[((i >> 8) & 0xff00) | texel] : texel;
+                }
+            }
+            u += du;
+            v += dv;
+            if (dir == DIR_F) {
+                dest++;
+                zdest++;
+                z += dz;
+                z += z < dz;
+                i += di;
+            } else {
+                br_uint_32 borrow = z < dz;
+                dest--;
+                zdest--;
+                z -= dz + borrow;
+                i -= di;
+            }
+        } while (--n > 0);
+
+        // restart every run from the exact value
+        u = u_end;
+        v = v_end;
+    }
+}
+
+// The edge walk of zpt_trapezium with the fast scanline
+static inline __attribute__((always_inline)) void zpt_fast_trapezium(const int lit, const int dir, const tZPT_size* sz, const int bits) {
+    br_int_32 count = workspace.topCount;
+    if (count < 0) {
+        return;
+    }
+
+    br_uint_8* const colour = work.colour.base;
+    br_uint_8* const depth = work.depth.base;
+    const br_int_32 colour_stride = work.colour.stride_b;
+    const br_int_32 depth_stride = work.depth.stride_b;
+
+    const br_uint_32 main_d = workspace.d_xm;
+    const br_uint_32 top_d = workspace.d_x1;
+    const br_uint_32 q_grad = work.pq.grad_x;
+    const br_uint_32 q_nocarry = work.pq.d_nocarry;
+    const br_uint_32 q_carry = work.pq.d_carry;
+
+    br_uint_32 scan = workspace.scanAddress;
+    br_uint_32 zscan = workspace.depthAddress;
+    br_uint_32 main_i = workspace.xm;
+    br_uint_32 top_i = workspace.x1;
+    br_uint_32 s_z = workspace.s_z;
+    br_uint_32 s_i = workspace.s_i;
+    br_uint_32 q = work.pq.current;
+    br_uint_32 u = work.pu.current, u_grad = work.pu.grad_x, u_nocarry = work.pu.d_nocarry;
+    br_uint_32 v = work.pv.current, v_grad = work.pv.grad_x, v_nocarry = work.pv.d_nocarry;
+    br_uint_32 source = work.tsl.source;
+
+    br_int_32 x_end = top_i >> 16;
+    br_int_32 x_start = main_i & 0xffff;
+
+    for (;;) {
+        if (dir == DIR_F ? x_start <= x_end : x_start >= x_end) {
+            // bring the u and v error terms of the scanline start into 0..q
+            source <<= sz->pre;
+            if ((br_int_32)u >= (br_int_32)q) {
+                do {
+                    source = lane0_add(source, sz->incu);
+                    u_grad -= q_grad;
+                    u_nocarry -= q_nocarry;
+                    u -= q;
+                } while ((br_int_32)u >= (br_int_32)q);
+            } else if ((br_int_32)u < 0) {
+                do {
+                    source = lane0_add(source, -sz->decu);
+                    u_grad += q_grad;
+                    u_nocarry += q_nocarry;
+                    u += q;
+                } while ((br_int_32)u < 0);
+            }
+            if ((br_int_32)v >= (br_int_32)q) {
+                do {
+                    source = lane1_add(source, sz->incv);
+                    v_grad -= q_grad;
+                    v_nocarry -= q_nocarry;
+                    v -= q;
+                } while ((br_int_32)v >= (br_int_32)q);
+            } else if ((br_int_32)v < 0) {
+                do {
+                    source = lane1_add(source, -sz->decv);
+                    v_grad += q_grad;
+                    v_nocarry += q_nocarry;
+                    v += q;
+                } while ((br_int_32)v < 0);
+            }
+            source >>= sz->post1;
+            source &= sz->post2;
+
+            if (dir == DIR_F) {
+                zpt_fast_scanline(lit, dir, bits, colour + (br_uint_32)(scan + x_start), (br_uint_16*)(depth + (br_uint_32)(zscan + 2 * x_start)),
+                    x_end - x_start + 1, source, ror16(s_z), s_i, q, q_grad, u, u_grad, v, v_grad);
+            } else {
+                zpt_fast_scanline(lit, dir, bits, colour + (br_uint_32)(scan + x_start), (br_uint_16*)(depth + (br_uint_32)(zscan + 2 * x_start)),
+                    x_start - x_end + 1, source, ror16(s_z), s_i, q, -q_grad, u, -u_grad, v, -v_grad);
+            }
+        }
+
+        // next scanline: the major edge fraction carry selects the deltas
+        scan += colour_stride;
+        zscan += depth_stride;
+        {
+            const br_uint_32 next = main_i + main_d;
+            if (next < main_d) {
+                main_i = next + 1;
+                q += q_carry;
+                s_z += workspace.d_z_y_1;
+                s_i += workspace.d_i_y_1;
+                u += u_nocarry + u_grad;
+                v += v_nocarry + v_grad;
+            } else {
+                main_i = next;
+                q += q_nocarry;
+                s_z += workspace.d_z_y_0;
+                s_i += workspace.d_i_y_0;
+                u += u_nocarry;
+                v += v_nocarry;
+            }
+        }
+        top_i += top_d;
+        x_end = top_i >> 16;
+        x_start = main_i & 0xffff;
+        if (--count < 0) {
+            break;
+        }
+    }
+
+    workspace.scanAddress = scan;
+    workspace.depthAddress = zscan;
+    workspace.xm = main_i;
+    workspace.x1 = top_i;
+    workspace.s_z = s_z;
+    if (lit) {
+        workspace.s_i = s_i;
+    }
+    workspace.topCount = count;
+    work.pq.current = q;
+    work.pu.current = u;
+    work.pu.grad_x = u_grad;
+    work.pu.d_nocarry = u_nocarry;
+    work.pv.current = v;
+    work.pv.grad_x = v_grad;
+    work.pv.d_nocarry = v_nocarry;
+    work.tsl.source = source;
+}
+
+static void zpt_fast_trapezium_variant(const int lit, int dir, int size) {
+#define VARIANT(LIT)                                             \
+    switch (size * 2 + (dir == DIR_B)) {                         \
+    case 0:                                                      \
+        zpt_fast_trapezium(LIT, DIR_F, &zpt_sizes[0], 5);        \
+        break;                                                   \
+    case 1:                                                      \
+        zpt_fast_trapezium(LIT, DIR_B, &zpt_sizes[0], 5);        \
+        break;                                                   \
+    case 2:                                                      \
+        zpt_fast_trapezium(LIT, DIR_F, &zpt_sizes[1], 6);        \
+        break;                                                   \
+    case 3:                                                      \
+        zpt_fast_trapezium(LIT, DIR_B, &zpt_sizes[1], 6);        \
+        break;                                                   \
+    case 4:                                                      \
+        zpt_fast_trapezium(LIT, DIR_F, &zpt_sizes[2], 7);        \
+        break;                                                   \
+    case 5:                                                      \
+        zpt_fast_trapezium(LIT, DIR_B, &zpt_sizes[2], 7);        \
+        break;                                                   \
+    case 6:                                                      \
+        zpt_fast_trapezium(LIT, DIR_F, &zpt_sizes[3], 8);        \
+        break;                                                   \
+    case 7:                                                      \
+        zpt_fast_trapezium(LIT, DIR_B, &zpt_sizes[3], 8);        \
+        break;                                                   \
+    }
+    if (lit) {
+        VARIANT(1)
+    } else {
+        VARIANT(0)
+    }
+#undef VARIANT
+}
+
+void FastTrapezium_ZPTI_I8_D16(int dir, int size) {
+    zpt_fast_trapezium_variant(1, dir, size);
+}
+
+/*
  * Development: PENTPRIM_AB_ZPT=1 alternates the step prediction on and off
  * call by call and reports the time of each at exit (same scenes for both).
  */
@@ -856,6 +1160,10 @@ void FastTrapezium_ZPT_I8_D16(int dir, int size) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
         ab_ns[predict] += (t1.tv_sec - t0.tv_sec) * 1000000000LL + (t1.tv_nsec - t0.tv_nsec);
         ab_calls[predict]++;
+        return;
+    }
+    if (gPentprim_fast && !gPentprim_nested) {
+        zpt_fast_trapezium_variant(0, dir, size);
         return;
     }
     zpt_trapezium_variant(1, dir, size);
