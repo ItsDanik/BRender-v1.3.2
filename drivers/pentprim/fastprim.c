@@ -9,6 +9,7 @@
  * verify.h), but keep all per-span state in locals.
  */
 #include "fastprim.h"
+#include "fpgarast.h"
 
 #include "brender.h"
 #include "common.h"
@@ -23,6 +24,110 @@
 static inline br_uint_32 ror16(br_uint_32 v) {
     return (v >> 16) | (v << 16);
 }
+
+/*
+ * Development: built with -DPENTPRIM_STATS the pixel loops count triangle
+ * halves, spans, depth tests and pixels written per primitive type, and the
+ * textures used. PentprimStats_Frame() (called once per frame by the platform)
+ * keeps per frame peaks; a summary is printed at exit. Used to size the FPGA
+ * rasteriser.
+ */
+#ifdef PENTPRIM_STATS
+enum { ST_ZT, ST_ZTI, ST_ZPT, ST_ZPTF, ST_Z, ST_ZI, ST_KINDS };
+static const char* const st_names[ST_KINDS] = { "ZT", "ZTI", "ZPT exact", "ZPT/ZPTI fast", "Z", "ZI" };
+static struct { long long halves, spans, tested, written; } st[ST_KINDS];
+static long long st_hist[8];
+static long long st_f_halves, st_f_spans, st_f_tested, st_f_written, st_f_tex, st_f_texbytes;
+static long long st_p_halves, st_p_spans, st_p_tested, st_p_written, st_p_tex, st_p_texbytes;
+static long long st_tex_frames, st_texbytes_frames;
+static long st_frames;
+#define ST_TEX_MAX 4096
+static struct { const void* base; int bytes; long frame; } st_tex[ST_TEX_MAX];
+static int st_tex_count;
+static long long st_all_texbytes;
+
+static void st_summary(void) {
+    int k;
+    long long halves = 0, spans = 0, tested = 0, written = 0;
+    double f = st_frames ? (double)st_frames : 1;
+    fprintf(stderr, "pentprim stats over %ld frames (per frame averages):\n", st_frames);
+    for (k = 0; k < ST_KINDS; k++) {
+        fprintf(stderr, "  %-14s %8.0f halves %8.0f spans %9.0f tested %9.0f written\n", st_names[k],
+            st[k].halves / f, st[k].spans / f, st[k].tested / f, st[k].written / f);
+        halves += st[k].halves, spans += st[k].spans, tested += st[k].tested, written += st[k].written;
+    }
+    fprintf(stderr, "  %-14s %8.0f halves %8.0f spans %9.0f tested %9.0f written\n", "total", halves / f, spans / f, tested / f, written / f);
+    fprintf(stderr, "  %-14s %8lld halves %8lld spans %9lld tested %9lld written\n", "peak frame", st_p_halves, st_p_spans, st_p_tested, st_p_written);
+    fprintf(stderr, "  span length  1:%lld 2-4:%lld 5-8:%lld 9-16:%lld 17-32:%lld 33-64:%lld 65-128:%lld 129+:%lld\n",
+        st_hist[0], st_hist[1], st_hist[2], st_hist[3], st_hist[4], st_hist[5], st_hist[6], st_hist[7]);
+    fprintf(stderr, "  textures per frame: avg %.1f (%.0f bytes), peak %lld (%lld bytes); whole run %d textures, %lld bytes\n",
+        st_tex_frames / f, st_texbytes_frames / f, st_p_tex, st_p_texbytes, st_tex_count, st_all_texbytes);
+}
+
+void PentprimStats_Frame(void) {
+#define ST_PEAK(n) if (st_f_##n > st_p_##n) st_p_##n = st_f_##n
+    ST_PEAK(halves);
+    ST_PEAK(spans);
+    ST_PEAK(tested);
+    ST_PEAK(written);
+    ST_PEAK(tex);
+    ST_PEAK(texbytes);
+#undef ST_PEAK
+    if (st_f_halves) {
+        st_frames++;
+        st_tex_frames += st_f_tex;
+        st_texbytes_frames += st_f_texbytes;
+    }
+    st_f_halves = st_f_spans = st_f_tested = st_f_written = st_f_tex = st_f_texbytes = 0;
+}
+
+static void st_half(int kind, int tex_bytes) {
+    static int registered;
+    int i;
+    if (!registered) {
+        registered = 1;
+        atexit(st_summary);
+    }
+    st[kind].halves++;
+    st_f_halves++;
+    if (tex_bytes == 0) {
+        return;
+    }
+    for (i = 0; i < st_tex_count && st_tex[i].base != work.texture.base; i++) {
+    }
+    if (i == ST_TEX_MAX) {
+        return;
+    }
+    if (i == st_tex_count) {
+        st_tex_count++;
+        st_tex[i].base = work.texture.base;
+        st_tex[i].bytes = tex_bytes;
+        st_tex[i].frame = -1;
+        st_all_texbytes += tex_bytes;
+    }
+    if (st_tex[i].frame != st_frames) {
+        st_tex[i].frame = st_frames;
+        st_f_tex++;
+        st_f_texbytes += tex_bytes;
+    }
+}
+
+static inline void st_span(int kind, int len) {
+    st[kind].spans++;
+    st[kind].tested += len;
+    st_f_spans++;
+    st_f_tested += len;
+    st_hist[len <= 1 ? 0 : len <= 4 ? 1 : len <= 8 ? 2 : len <= 16 ? 3 : len <= 32 ? 4 : len <= 64 ? 5 : len <= 128 ? 6 : 7]++;
+}
+
+#define ST_HALF(kind, tex_bytes) st_half(kind, tex_bytes)
+#define ST_SPAN(kind, len) st_span(kind, len)
+#define ST_WRITE(kind) (st[kind].written++, st_f_written++)
+#else
+#define ST_HALF(kind, tex_bytes)
+#define ST_SPAN(kind, len)
+#define ST_WRITE(kind)
+#endif
 
 /*
  * Z buffered, affine textured, unlit, power of 2 texture: one half (top or
@@ -63,6 +168,7 @@ static inline __attribute__((always_inline)) void draw_zt_pow2(br_uint_32* minor
     br_uint_32 scan = workspace.scanAddress;
     br_uint_32 zscan = workspace.depthAddress;
 
+    ST_HALF(ST_ZT, 1 << (2 * pow2));
     do {
         const br_uint_32 x = minor >> 16;
         br_int_32 n = (br_int_32)((xm >> 16) - x);
@@ -73,10 +179,12 @@ static inline __attribute__((always_inline)) void draw_zt_pow2(br_uint_32* minor
         br_uint_32 v = s_v;
 
         if (dir == DRAW_LR ? n <= 0 : n >= 0) {
+            ST_SPAN(ST_ZT, (n < 0 ? -n : n) + 1);
             for (;;) {
                 if ((br_uint_16)z <= zline[n]) {
                     const br_uint_8 texel = texture[((v >> v_shift) & v_mask) | ((u >> 16) & u_mask)];
                     if (texel != 0) {
+                        ST_WRITE(ST_ZT);
                         zline[n] = (br_uint_16)z;
                         line[n] = texel;
                     }
@@ -143,6 +251,13 @@ static inline __attribute__((always_inline)) void draw_zt_pow2(br_uint_32* minor
         break;
 
 void FastDraw_ZT_I8_D16_POW2(int right_to_left, int pow2) {
+    if (gPentprim_null) {
+        return;
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_Tri(FR_TRI_T | (right_to_left ? FR_TRI_RL : 0), pow2);
+        return;
+    }
     switch (pow2) {
         DRAW_ZT_POW2_CASE(3)
         DRAW_ZT_POW2_CASE(4)
@@ -205,12 +320,14 @@ static inline __attribute__((always_inline)) void draw_zti_pow2(br_uint_32* mino
     br_uint_32 scratch0 = workspace.scratch0;
     br_uint_32 scratch1 = workspace.scratch1;
 
+    ST_HALF(ST_ZTI, 1 << (2 * pow2));
     do {
         const br_uint_32 x = minor >> 16;
         br_int_32 n = (br_int_32)((xm >> 16) - x);
 
         scratch0 = scan + x;
         if (dir == DRAW_LR ? n <= 0 : n >= 0) {
+            ST_SPAN(ST_ZTI, (n < 0 ? -n : n) + 1);
             br_uint_8* const line = colour + scratch0;
             br_uint_16* zline;
             br_uint_32 z = ror16(s_z);
@@ -224,6 +341,7 @@ static inline __attribute__((always_inline)) void draw_zti_pow2(br_uint_32* mino
                 if ((br_uint_16)z <= zline[n]) {
                     const br_uint_8 texel = texture[((v >> v_shift) & v_mask) | ((u >> 16) & u_mask)];
                     if (texel != 0) {
+                        ST_WRITE(ST_ZTI);
                         zline[n] = (br_uint_16)z;
                         line[n] = shade[(i & 0xff0000u) >> 8 | texel];
                     }
@@ -297,6 +415,13 @@ static inline __attribute__((always_inline)) void draw_zti_pow2(br_uint_32* mino
         break;
 
 void FastDraw_ZTI_I8_D16_POW2(int right_to_left, int pow2) {
+    if (gPentprim_null) {
+        return;
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_Tri(FR_TRI_T | FR_TRI_I | (right_to_left ? FR_TRI_RL : 0), pow2);
+        return;
+    }
     switch (pow2) {
         DRAW_ZTI_POW2_CASE(3)
         DRAW_ZTI_POW2_CASE(4)
@@ -447,11 +572,13 @@ static inline __attribute__((always_inline)) void zpt_scanline(const int predict
     br_int_32 u_guess = 1, v_guess = 1;
 
     out->zdest_set = 0;
+    ST_SPAN(ST_ZPT, (int)(dir == DIR_F ? end - start : start - end) + 1);
     for (;;) {
         // depth first: no texture fetch (cache miss) for hidden pixels
         if ((br_uint_16)z <= *zdest) {
             const br_uint_8 texel = texture[source];
             if (texel != 0) {
+                ST_WRITE(ST_ZPT);
                 *zdest = (br_uint_16)z;
                 *dest = texel;
             }
@@ -629,6 +756,7 @@ static inline __attribute__((always_inline)) void zpt_trapezium(const int predic
     br_uint_32 v = work.pv.current, v_grad = work.pv.grad_x, v_nocarry = work.pv.d_nocarry;
     br_uint_32 source = work.tsl.source;
 
+    ST_HALF(ST_ZPT, 1 << (2 * (8 - sz->pre)));
     int drawn = 0;
     br_uint_16* tsl_zdest = (br_uint_16*)work.tsl.zdest;
     br_uint_8 *start_ptr = NULL, *end_ptr = NULL;
@@ -887,6 +1015,7 @@ static inline __attribute__((always_inline)) void zpt_fast_scanline(const int li
     br_int_32 du, dv;
     br_int_32 k = 0;
 
+    ST_SPAN(ST_ZPTF, count);
     if (flat) {
         u = u_base;
         v = v_base;
@@ -934,6 +1063,7 @@ static inline __attribute__((always_inline)) void zpt_fast_scanline(const int li
             if ((br_uint_16)z <= *zdest) {
                 const br_uint_8 texel = texture[((v >> (16 - bits)) & vmask) | ((u >> 16) & mask)];
                 if (texel != 0) {
+                    ST_WRITE(ST_ZPTF);
                     *zdest = (br_uint_16)z;
                     *dest = lit ? shade[((i >> 8) & 0xff00) | texel] : texel;
                 }
@@ -993,6 +1123,7 @@ static inline __attribute__((always_inline)) void zpt_fast_trapezium(const int l
     br_int_32 x_end = top_i >> 16;
     br_int_32 x_start = main_i & 0xffff;
 
+    ST_HALF(ST_ZPTF, 1 << (2 * bits));
     for (;;) {
         if (dir == DIR_F ? x_start <= x_end : x_start >= x_end) {
             // bring the u and v error terms of the scanline start into 0..q
@@ -1124,6 +1255,13 @@ static void zpt_fast_trapezium_variant(const int lit, int dir, int size) {
 }
 
 void FastTrapezium_ZPTI_I8_D16(int dir, int size) {
+    if (gPentprim_null) {
+        return;
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_PTri(dir == DIR_B, 1, size + 5);
+        return;
+    }
     zpt_fast_trapezium_variant(1, dir, size);
 }
 
@@ -1141,6 +1279,13 @@ static void ab_zpt_summary(void) {
 }
 
 void FastTrapezium_ZPT_I8_D16(int dir, int size) {
+    if (gPentprim_null) {
+        return;
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_PTri(dir == DIR_B, 0, size + 5);
+        return;
+    }
     if (ab_zpt < 0) {
         const char* env = getenv("PENTPRIM_AB_ZPT");
         ab_zpt = env != NULL && env[0] == '1';
@@ -1200,11 +1345,13 @@ static inline __attribute__((always_inline)) void draw_z(br_uint_32* minor_x, co
     br_uint_32 scan = workspace.scanAddress;
     br_uint_32 zscan = workspace.depthAddress;
 
+    ST_HALF(ST_Z, 0);
     do {
         const br_uint_32 x = minor >> 16;
         br_int_32 n = (br_int_32)((xm >> 16) - x);
 
         if (dir == DRAW_LR ? n <= 0 : n >= 0) {
+            ST_SPAN(ST_Z, (n < 0 ? -n : n) + 1);
             br_uint_8* const line = colour + (br_uint_32)(scan + x);
             br_uint_16* const zline = (br_uint_16*)(depth + (br_uint_32)(zscan + 2 * x));
             br_uint_32 z = ror16(s_z);
@@ -1221,6 +1368,7 @@ static inline __attribute__((always_inline)) void draw_z(br_uint_32* minor_x, co
                     carry = borrow;
                 }
                 if (z <= ((prev & 0xffff0000u) | zline[n])) {
+                    ST_WRITE(ST_Z);
                     zline[n] = (br_uint_16)z;
                     line[n] = pixel;
                 }
@@ -1262,6 +1410,13 @@ static inline __attribute__((always_inline)) void draw_z(br_uint_32* minor_x, co
 }
 
 void FastDraw_Z_I8_D16(int right_to_left) {
+    if (gPentprim_null) {
+        return;
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_Tri(right_to_left ? FR_TRI_RL : 0, 0);
+        return;
+    }
     if (right_to_left) {
         draw_z(&workspace.x1, &workspace.d_x1, &workspace.topCount, DRAW_RL);
         draw_z(&workspace.x2, &workspace.d_x2, &workspace.bottomCount, DRAW_RL);
@@ -1306,10 +1461,13 @@ static inline __attribute__((always_inline)) void trapezium_zi(br_int_32* half_c
     br_uint_32 x_minor = minor >> 16;
     br_uint_32 x_main = main_i >> 16;
 
+    ST_HALF(ST_ZI, 0);
+
     for (;;) {
         br_int_32 n = (br_int_32)(x_main - x_minor);
 
         if (dir == DIR_F ? n <= 0 : n >= 0) {
+            ST_SPAN(ST_ZI, (n < 0 ? -n : n) + 1);
             br_uint_8* const line = colour + (br_uint_32)(scan + x_minor);
             br_uint_16* const zline = (br_uint_16*)(depth + (br_uint_32)(zscan + 2 * x_minor));
             br_uint_32 i = ror16(s_i);
@@ -1350,6 +1508,7 @@ static inline __attribute__((always_inline)) void trapezium_zi(br_int_32* half_c
                     i -= carry;
                 }
                 if (z <= ((prev & 0xffff0000u) | zline[n])) {
+                    ST_WRITE(ST_ZI);
                     zline[n] = (br_uint_16)z;
                     line[n] = (br_uint_8)i;
                 }
@@ -1399,6 +1558,13 @@ static inline __attribute__((always_inline)) void trapezium_zi(br_int_32* half_c
 }
 
 void FastTrapezium_ZI_I8_D16(int right_to_left) {
+    if (gPentprim_null) {
+        return;
+    }
+    if (gPentprim_fpga) {
+        FpgaRast_Tri(FR_TRI_I | (right_to_left ? FR_TRI_RL : 0), 0);
+        return;
+    }
     if (right_to_left) {
         trapezium_zi(&workspace.topCount, &workspace.x1, &workspace.d_x1, DIR_B);
         trapezium_zi(&workspace.bottomCount, &workspace.x2, &workspace.d_x2, DIR_B);

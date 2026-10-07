@@ -14,6 +14,7 @@
 
 #include "shortcut.h"
 #include "brassert.h"
+#include "fpgarast.h"
 
 BR_RCS_ID("$Id: plib.c 1.1 1997/12/10 16:47:37 jon Exp $");
 
@@ -220,6 +221,12 @@ static br_error BR_CMETHOD_DECL(br_primitive_library_soft, flush)(
    ASSERT(self);
 
 	RasteriseBufferFlush();
+
+	/*
+	 * End of a scene: what the FPGA rasteriser drew goes back to the caller
+	 */
+	if(gPentprim_fpga)
+		FpgaRast_SceneEnd();
 
 	/*
 	 * Unlock destination pixelmap, now rendering is complete.

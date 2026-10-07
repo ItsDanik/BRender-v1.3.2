@@ -1989,7 +1989,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_32(brp_block *block, brp_vertex *v0,
         goto reversed;
     }
     // call    TrapeziumRender_ZPT_I8_D16_32_f
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 0);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -2007,7 +2007,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_32(brp_block *block, brp_vertex *v0,
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_32_f
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 0);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -2018,7 +2018,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_32(brp_block *block, brp_vertex *v0,
 reversed:
 
     // call    TrapeziumRender_ZPT_I8_D16_32_b
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 0);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -2036,7 +2036,7 @@ reversed:
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_32_b
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 0);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -2438,7 +2438,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_64(brp_block *block, brp_vertex *v0,
         goto reversed;
     }
     // call    TrapeziumRender_ZPT_I8_D16_64_f
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 1);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -2456,7 +2456,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_64(brp_block *block, brp_vertex *v0,
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_64_f
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 1);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -2467,7 +2467,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_64(brp_block *block, brp_vertex *v0,
 reversed:
 
     // call    TrapeziumRender_ZPT_I8_D16_64_b
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 1);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -2485,7 +2485,7 @@ reversed:
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_64_b
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 1);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -2890,7 +2890,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_128(brp_block *block, brp_vertex *v0
         goto reversed;
     }
     // call    TrapeziumRender_ZPT_I8_D16_128_f
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 2);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -2908,7 +2908,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_128(brp_block *block, brp_vertex *v0
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_128_f
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 2);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -2919,7 +2919,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_128(brp_block *block, brp_vertex *v0
 reversed:
 
     // call    TrapeziumRender_ZPT_I8_D16_128_b
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 2);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -2937,7 +2937,7 @@ reversed:
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPT_I8_D16_64_b
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 2);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -3055,7 +3055,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_256(brp_block *block, brp_vertex *v0
         goto reversed;
     }
     // call    TrapeziumRender_ZPTI_I8_D16_256_f
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 3);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -3073,7 +3073,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_256(brp_block *block, brp_vertex *v0
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPTI_I8_D16_256_f
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_F, 3);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_F, params, eFog_no, eBlend_no);
@@ -3084,7 +3084,7 @@ void BR_ASM_CALL TriangleRender_ZPTI_I8_D16_256(brp_block *block, brp_vertex *v0
 reversed:
 
     // call    TrapeziumRender_ZPTI_I8_D16_64_b
-   if (gPentprim_fast && !gPentprim_reference) {
+   if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 3);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);
@@ -3102,7 +3102,7 @@ reversed:
     // mov		work_top_count,ecx
     work_top_count = ecx.v;
     // call    TrapeziumRender_ZPTI_I8_D16_64_b
-    if (gPentprim_fast && !gPentprim_reference) {
+    if ((gPentprim_fast || gPentprim_fpga) && !gPentprim_reference) {
         FastTrapezium_ZPTI_I8_D16(DIR_B, 3);
     } else {
         TrapeziumRender_ZPTI_I8_D16(DIR_B, params, eFog_no, eBlend_no);

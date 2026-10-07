@@ -12,6 +12,7 @@
 #include "drv.h"
 #include "shortcut.h"
 #include "brassert.h"
+#include "fpgarast.h"
 
 BR_RCS_ID("$Id: sbuffer.c 1.2 1998/10/21 15:42:23 jon Exp $");
 
@@ -182,14 +183,19 @@ static br_error BR_CMETHOD_DECL(br_buffer_stored_soft, update)(
 	struct br_device_pixelmap *pm,
 	br_token_value *tv)
 {
+	FpgaRast_Invalidate(self->buffer.base);
 
 	SetupRenderBuffer(&self->buffer,pm);
+
+	FpgaRast_Invalidate(self->buffer.base);
 
 	return BRE_OK;
 }
 
 static void BR_CMETHOD_DECL(br_buffer_stored_soft, free)(br_buffer_stored *self)
 {
+	FpgaRast_Invalidate(self->buffer.base);
+
 	ObjectContainerRemove(self->plib, (br_object *)self);
 
     BrResFreeNoCallback(self);

@@ -23,6 +23,17 @@ extern int gPentprim_verify;
 extern int gPentprim_reference;
 extern int gPentprim_timing;
 extern int gPentprim_fast;
+/* PENTPRIM_NULL=1 (development): the rewritten pixel loops and the fog pass
+ * draw nothing. The frame time left is what the game costs without the
+ * rasteriser, the ceiling for an FPGA rasteriser. */
+extern int gPentprim_null;
+/* PENTPRIM_FPGA=1: triangles are packed into commands for the FPGA rasteriser
+ * (fpgarast.h), executed by its software model when there is no FPGA
+ * (PENTPRIM_FPGA=2: the model with its own copy of the buffers, to test the
+ * buffer ownership rules of the hardware on the PC). The
+ * commands do not hand the rasteriser workspace back, so verification only
+ * compares pixels in this mode. */
+extern int gPentprim_fpga;
 
 void PentprimVerify_Begin(void);
 void PentprimVerify_Switch(void);

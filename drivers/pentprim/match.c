@@ -6,9 +6,12 @@
  *
  * Functions that match a primitive against the renderers state
  */
+#include <stdio.h>
+#include <stdlib.h>
 #include "drv.h"
 #include "shortcut.h"
 #include "brassert.h"
+#include "fpgarast.h"
 
 BR_RCS_ID("$Id: match.c 1.1 1997/12/10 16:47:17 jon Exp $");
 
@@ -206,6 +209,7 @@ static void updateWorkPrim(struct prim_work *pw, struct br_primitive_state *self
 	if(self->prim.index_shade.buffer) {
 		pw->shade_type = self->prim.index_shade.buffer->buffer.type;
 		pw->shade_table = self->prim.index_shade.buffer->buffer.base;
+		pw->shade_table_size = self->prim.index_shade.buffer->buffer.stride_b * self->prim.index_shade.buffer->buffer.height;
         pw->index_base = self->prim.index_base;
 		pw->index_range = self->prim.index_range;
 
@@ -369,6 +373,102 @@ static br_boolean isPowerof2(br_int_32 x)
 	return !((x-1) & x);
 }
 
+#ifdef PENTPRIM_STATS
+/*
+ * Development: census of the primitive blocks selected (how often each
+ * rasteriser function set is chosen), printed at exit
+ */
+static struct { const char *name; long count; } block_census[128];
+
+static void blockCensusSummary(void)
+{
+	int i;
+	fprintf(stderr, "pentprim primitive blocks selected:\n");
+	for(i = 0; i < 128 && block_census[i].name; i++)
+		fprintf(stderr, "  %8ld  %s\n", block_census[i].count, block_census[i].name);
+}
+
+static void PentprimStats_Block(const char *name)
+{
+	int i;
+	if(block_census[0].name == NULL)
+		atexit(blockCensusSummary);
+	for(i = 0; i < 127 && block_census[i].name && block_census[i].name != name; i++)
+		;
+	block_census[i].name = name;
+	block_census[i].count++;
+}
+#endif
+
+/*
+ * Rasteriser functions whose pixels all go through the entry points in
+ * fastprim.c, which hand them to the FPGA rasteriser (texture sizes up to 256)
+ */
+static br_boolean fpgaDraws(brp_render_fn *render)
+{
+	static brp_render_fn * const functions[] = {
+		(brp_render_fn *)TriangleRender_Z_I8_D16,
+		(brp_render_fn *)TriangleRender_ZI_I8_D16,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16_8,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16_16,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16_32,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16_64,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16_128,
+		(brp_render_fn *)TriangleRender_ZT_I8_D16_256,
+		(brp_render_fn *)TriangleRender_ZTI_I8_D16_8,
+		(brp_render_fn *)TriangleRender_ZTI_I8_D16_16,
+		(brp_render_fn *)TriangleRender_ZTI_I8_D16_32,
+		(brp_render_fn *)TriangleRender_ZTI_I8_D16_64,
+		(brp_render_fn *)TriangleRender_ZTI_I8_D16_128,
+		(brp_render_fn *)TriangleRender_ZTI_I8_D16_256,
+		(brp_render_fn *)TriangleRender_ZPT_I8_D16_32,
+		(brp_render_fn *)TriangleRender_ZPT_I8_D16_64,
+		(brp_render_fn *)TriangleRender_ZPT_I8_D16_256,
+		(brp_render_fn *)TriangleRender_ZPTI_I8_D16_32,
+		(brp_render_fn *)TriangleRender_ZPTI_I8_D16_64,
+		(brp_render_fn *)TriangleRender_ZPTI_I8_D16_128,
+		(brp_render_fn *)TriangleRender_ZPTI_I8_D16_256,
+	};
+	int i;
+
+	for(i = 0; i < BR_ASIZE(functions); i++)
+		if(render == functions[i])
+			return BR_TRUE;
+
+	return BR_FALSE;
+}
+
+/*
+ * Everything else draws into the buffers on the host and has to get them
+ * from the FPGA first. Those blocks are rendered through this thunk, which
+ * also covers primitives drawn late from an order table.
+ */
+static void BR_ASM_CALL FpgaHostThunk(brp_block *block, brp_vertex *v0, brp_vertex *v1, brp_vertex *v2,
+	br_uint_16 *fp_vertices, br_uint_16 *fp_edges, br_vector4 *fp_eqn, struct temp_face *tfp)
+{
+	if(gPentprim_fpga)
+		FpgaRast_Sync(FR_SYNC_COLOUR | FR_SYNC_DEPTH_WRITE);
+
+	((struct local_block *)block)->host_render(block, v0, v1, v2, fp_vertices, fp_edges, fp_eqn, tfp);
+}
+
+static void fpgaHostThunks(void)
+{
+	int i,j;
+
+	for(i = 0; i < 3; i++) {
+		struct local_block *pb = primInfoTables[0][i].blocks;
+
+		for(j = 0; j < primInfoTables[0][i].nblocks; j++, pb++) {
+			if(pb->host_render == NULL && !fpgaDraws(pb->p.render)) {
+				pb->host_render = pb->p.render;
+				pb->p.render = (brp_render_fn *)FpgaHostThunk;
+			}
+		}
+	}
+}
+
 br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 		struct br_primitive_state *self,
 		struct brp_block **rpb,
@@ -382,9 +482,16 @@ br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 	br_uint_32 flags;
 	br_token input_colour_type;
 
+	static br_boolean thunks = BR_FALSE;
+
 	ASSERT(rpb);
 	ASSERT(self);
 	ASSERT(self->plib);
+
+	if(!thunks) {
+		thunks = BR_TRUE;
+		fpgaHostThunks();
+	}
 
 	/*
 	 * Lock destination pixelmap for rendering a new model or scene if
@@ -678,6 +785,11 @@ br_error BR_CMETHOD_DECL(br_primitive_state_soft, renderBegin)(
 	 * pointer is the same as previous match
 	 */
 	*rpb = &pb->p;
+
+#ifdef PENTPRIM_STATS
+	if(!no_render)
+		PentprimStats_Block(pb->p.identifier);
+#endif
 
 	if(pb == self->cache.last_block) {
 		*block_changed = BR_FALSE;

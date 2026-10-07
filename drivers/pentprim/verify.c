@@ -16,6 +16,8 @@
 int gPentprim_verify;
 int gPentprim_reference;
 int gPentprim_fast;
+int gPentprim_null;
+int gPentprim_fpga;
 int gPentprim_timing;
 int gPentprim_nested;
 
@@ -136,6 +138,16 @@ __attribute__((constructor)) static void verify_init(void) {
     if (gPentprim_fast) {
         fprintf(stderr, "pentprim: using the fast (not bit-identical) perspective texture mapper\n");
     }
+    env = getenv("PENTPRIM_NULL");
+    gPentprim_null = env != NULL && env[0] == '1';
+    if (gPentprim_null) {
+        fprintf(stderr, "pentprim: null rasteriser, nothing is drawn\n");
+    }
+    env = getenv("PENTPRIM_FPGA");
+    gPentprim_fpga = env != NULL && (env[0] == '1' || env[0] == '2');
+    if (gPentprim_fpga) {
+        fprintf(stderr, "pentprim: FPGA rasteriser commands (software model%s)\n", env[0] == '2' ? " with its own memory" : "");
+    }
     if (gPentprim_verify) {
         fprintf(stderr, "pentprim: verifying rewritten rasteriser functions against the originals\n");
         atexit(summary);
@@ -196,8 +208,8 @@ void PentprimVerify_End(const char* name) {
 
     c = first_diff(ref_colour, work.colour.base, colour_size);
     d = depth_size ? first_diff(ref_depth, work.depth.base, depth_size) : -1;
-    s = first_diff((br_uint_8*)&ref_state.workspace, (br_uint_8*)&workspace, sizeof(workspace));
-    if (s < 0) {
+    s = gPentprim_fpga ? -1 : first_diff((br_uint_8*)&ref_state.workspace, (br_uint_8*)&workspace, sizeof(workspace));
+    if (s < 0 && !gPentprim_fpga) {
         // rasteriser state in work (scanline interpolants etc.), reported past the workspace bytes
         int w = first_diff((br_uint_8*)&ref_state.work, (br_uint_8*)&work, sizeof(work));
         if (w >= 0) {

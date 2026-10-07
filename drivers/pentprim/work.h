@@ -151,6 +151,7 @@ typedef struct prim_work {
 	 * Lookup tables
 	 */
 	br_uint_8 *shade_table;
+	br_uint_32 shade_table_size;	/* in bytes */
 	br_uint_8 *blend_table;
 	br_uint_32 *lighting_table;
 	br_uint_32 *screendoor_table;

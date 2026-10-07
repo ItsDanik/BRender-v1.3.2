@@ -8,6 +8,8 @@
 #include "fpsetup.h"
 #include "fpwork.h"
 #include "common.h"
+#include "fpgarast.h"
+#include "verify.h"
 
 enum tDraw_ZT_I8_direction {
     Draw_ZT_I8_NWLR,
@@ -801,7 +803,7 @@ returnAddress:
     }
 }
 
-void TriangleRender_ZT_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2)
+static void TriangleRender_ZT_I8_D16_Body(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2)
 {
     workspace.v0 = v0;
     workspace.v1 = v1;
@@ -887,6 +889,11 @@ void TriangleRender_ZT_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,b
     // 	mov workspace.d_xm_f,ebx
     workspace.d_xm_f = ebx.v;
     // 	jmp ecx
+    // the FPGA rasteriser draws it, except when it is the original's turn in a verified call
+    if (gPentprim_fpga && gPentprim_nested != 1) {
+        FpgaRast_ATri(edx.v == Draw_ZT_I8_NWRL || edx.v == Draw_ZT_I8_DWRL);
+        return;
+    }
     switch(edx.v) {
         case Draw_ZT_I8_NWLR:
             DRAW_ZT_I8(&workspace.x1, &workspace.d_x1, DRAW_LR, &workspace.topCount, WRAPPED, eFog_no, eBlend_no);
@@ -909,6 +916,17 @@ void TriangleRender_ZT_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,b
     }
 }
 
+
+void TriangleRender_ZT_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2)
+{
+    if (gPentprim_fpga) {
+        PENTPRIM_DISPATCH("TriangleRender_ZT_I8_D16",
+            TriangleRender_ZT_I8_D16_Body(block, v0, v1, v2),
+            TriangleRender_ZT_I8_D16_Body(block, v0, v1, v2));
+    } else {
+        TriangleRender_ZT_I8_D16_Body(block, v0, v1, v2);
+    }
+}
 
 void BR_ASM_CALL TriangleRender_ZTI_I8_D16(brp_block *block, brp_vertex *v0, brp_vertex *v1,brp_vertex *v2) {
     workspace.v0 = v0;

@@ -143,6 +143,8 @@ add_library(pentprim
 	zb8p2unl.c
 	fastprim.c
 	fastprim.h
+	fpgarast.c
+	fpgarast.h
 	verify.c
 	verify.h
 	zb8p2lit.c

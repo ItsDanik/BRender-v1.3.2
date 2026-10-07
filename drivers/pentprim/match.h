@@ -131,6 +131,12 @@ struct local_block {
 
 
 	} setup;
+
+	/*
+	 * The block's own render function while p.render is FpgaHostThunk
+	 * (match.c), set up at run time
+	 */
+	brp_render_fn *host_render;
 };
 
 struct custom_block {
